@@ -66,7 +66,8 @@ struct AgentToolDefinition: Sendable {
         name: "list_spaces", title: "List Spaces",
         description:
             "Lists the Spaces you may use. A Space is a set of tabs with its own sign-ins. A locked Space shows only its name until the person unlocks it.",
-        arguments: [], readOnly: true, destructive: false, idempotent: true, openWorld: false)
+        arguments: [.boolean("icons", "Also give each Space's icon as a PNG data address. Defaults to false.")],
+        readOnly: true, destructive: false, idempotent: true, openWorld: false)
     static let listTabs = Self(
         name: "list_tabs", title: "List tabs",
         description:

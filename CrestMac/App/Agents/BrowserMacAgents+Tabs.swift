@@ -19,6 +19,10 @@ extension BrowserMacAgents {
         let space: UUID?
     }
 
+    private struct SpacesQuery: Decodable {
+        let icons: Bool?
+    }
+
     private struct Opening: Decodable {
         let space: UUID
         let url: String
@@ -86,6 +90,9 @@ extension BrowserMacAgents {
     // MARK: - Actions - Spaces
 
     func listSpaces(_ call: BrowserAgentCall) throws(BrowserAgentFailure) -> AgentToolResult {
+        // An icon is a picture the model reads as hundreds of tokens of
+        // base64, so it comes only when asked for.
+        let icons = try call.arguments(SpacesQuery.self).icons == true
         let reach = try reach(call)
         let workspace = reach.workspaceID.flatMap { core.state.workspaces[$0] }
         let selected = application.stackedWindowIDs.compactMap {
@@ -96,7 +103,7 @@ extension BrowserMacAgents {
             return SpaceListing(
                 id: reached.spaceID, name: reached.name, locked: reached.isLocked,
                 active: space.map { $0.id == selected }, symbol: space?.settings.symbol,
-                icon: space.flatMap(spaceIcon))
+                icon: icons ? space.flatMap(spaceIcon) : nil)
         }
         return .data(["spaces": spaces])
     }

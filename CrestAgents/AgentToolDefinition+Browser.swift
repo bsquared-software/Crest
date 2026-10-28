@@ -29,10 +29,11 @@ extension AgentToolDefinition {
     static let listSearchProviders = Self(
         name: "list_search_providers", title: "List search providers",
         description:
-            "Lists Crest's enabled search providers, their shortcuts and resolved templates, and the default provider for an allowed, unlocked Space.",
+            "Gives the default search provider for an allowed, unlocked Space, with its shortcuts and resolved template; with all, every enabled provider too.",
         arguments: [
             .string(
-                "space", "The Space's id; defaults to the active allowed Space or first unlocked one.", required: false)
+                "space", "The Space's id; defaults to the active allowed Space or first unlocked one.", required: false),
+            .boolean("all", "Also list every enabled provider. Defaults to false."),
         ],
         readOnly: true, destructive: false, idempotent: true, openWorld: false)
     static let readPageText = Self(
