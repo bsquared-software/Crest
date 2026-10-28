@@ -4593,6 +4593,10 @@
     "agent-reads-pages-with-shadowing-form-fields": {
       "category": "fixed",
       "message": "Agents can read Wikipedia and other pages whose forms have fields named like the form's own properties, such as title or hidden, which used to stop the page outline or leave the form out of the page's text."
+    },
+    "agent-navigate-answers-destination": {
+      "category": "fixed",
+      "message": "When an agent navigates a tab, goes back or goes forward, Crest answers with the page the tab went to rather than the one it left."
     }
   }
 }
