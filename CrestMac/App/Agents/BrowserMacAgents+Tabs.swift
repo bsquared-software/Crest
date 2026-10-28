@@ -155,6 +155,8 @@ extension BrowserMacAgents {
         guard url != nil || navigation.action != nil else { throw .invalidArguments("give url or action.") }
         return try await serially(on: navigation.tab) { () async throws(BrowserAgentFailure) -> AgentToolResult in
             let page = try self.page(for: navigation.tab, call)
+            // Navigating is a use of the page, so a held one's rest starts again.
+            self.renewRest(of: navigation.tab, page, call)
             if let url {
                 page.corePage.load(url)
                 self.note(.loadedPage, url.absoluteString, call)

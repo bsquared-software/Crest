@@ -40,6 +40,9 @@ final class BrowserMacAgents {
         /// the tab's page changed, as when it moved to another engine.
         var heldPages: [UUID: UUID] = [:]
         var observedPages: [UUID: UUID] = [:]
+        /// When each tab the agent holds stops rendering for it, once the
+        /// agent leaves it alone. Each call on the tab replaces it.
+        var rests: [UUID: Task<Void, Never>] = [:]
         /// When the agent last gave each tab input, which may start a load a
         /// moment later.
         var lastInput: [UUID: ContinuousClock.Instant] = [:]
@@ -241,17 +244,26 @@ final class BrowserMacAgents {
     private func letGo(_ tabID: UUID, of link: Link) {
         let page = agentPage(tabID)?.enginePage
         let others = links.values.filter { $0 !== link }
-        if let held = link.heldPages.removeValue(forKey: tabID), page?.id == held,
-            !others.contains(where: { $0.heldPages[tabID] == held })
-        {
-            page?.holdRendering(false, size: .zero)
-        }
+        link.rests.removeValue(forKey: tabID)?.cancel()
+        stopRendering(tabID, for: link)
         if let observed = link.observedPages.removeValue(forKey: tabID), page?.id == observed,
             !others.contains(where: { $0.observedPages[tabID] == observed })
         {
             page?.observeActivity(false)
         }
         link.lastInput[tabID] = nil
+    }
+
+    /// Stops tab `tabID`'s page rendering for `link`'s agent once no other
+    /// connection holds it, so it rests as any background tab does. The
+    /// agent's next call on the tab holds it again.
+    private func stopRendering(_ tabID: UUID, for link: Link) {
+        let page = agentPage(tabID)?.enginePage
+        if let held = link.heldPages.removeValue(forKey: tabID), page?.id == held,
+            !links.values.contains(where: { $0 !== link && $0.heldPages[tabID] == held })
+        {
+            page?.holdRendering(false, size: .zero)
+        }
     }
 
     // MARK: - Actions - Requests
@@ -386,6 +398,33 @@ final class BrowserMacAgents {
         }
         tabWork[tabID] = Task { _ = await result.value }
         return try await result.value.get()
+    }
+
+    /// Lets tab `tabID` rest once `link`'s agent has left it alone for `delay`
+    /// after the call that asked finished, in place of the rest an earlier
+    /// call asked for. A call on the tab, or letting go of it, cancels the
+    /// rest; it waits behind the tab's other work, so a call never loses its
+    /// page midway, and holds neither this service nor the connection while
+    /// it waits.
+    @discardableResult
+    func rest(_ tabID: UUID, of link: Link, after delay: Duration) -> Task<Void, Never> {
+        link.rests[tabID]?.cancel()
+        let rest = Task { @MainActor [weak self, weak link] in
+            _ = try? await self?.serially(on: tabID) { () async throws(BrowserAgentFailure) -> AgentToolResult in
+                .message("")
+            }
+            do { try await Task.sleep(for: delay) } catch { return }
+            // A call queued meanwhile goes first, and cancels this rest as it
+            // holds the page again.
+            _ = try? await self?.serially(on: tabID) { () async throws(BrowserAgentFailure) -> AgentToolResult in
+                .message("")
+            }
+            guard !Task.isCancelled, let self, let link else { return }
+            link.rests[tabID] = nil
+            stopRendering(tabID, for: link)
+        }
+        link.rests[tabID] = rest
+        return rest
     }
 
     /// The live page of tab `tabID` when it has one, which an agent holds.
