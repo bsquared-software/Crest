@@ -67,9 +67,9 @@ When a page runs on WebKit, input reaches it as script events, which some pages 
 
 Launchers and other local tools use the same helper, approval and Spaces as coding agents.
 
-- `list_spaces` says which Space is active and includes each unlocked Space's artwork. `list_tabs` says whether each tab is pinned or saved and which folders hold it.
+- `list_spaces` says which Space is active, and with `icons` includes each unlocked Space's artwork. `list_tabs` says whether each tab is pinned or saved and which folders hold it.
 - `show_tab` shows the tab itself, opening a normal window over its Space only when none is open. `close_tab` closes only open tabs.
 - `search_history` searches the history of the allowed, unlocked Spaces, newest first. Every word of `query` must appear in the title or address, `domain` matches a host and its subdomains, and `limit` takes 1 through 1000, 25 by default.
 - `delete_history` removes every visit to one `url`, without its fragment, from one allowed, unlocked `space`, once the person agrees. An address with no visits removes nothing and asks nothing.
-- `list_search_providers` lists the enabled search providers and a Space's default.
+- `list_search_providers` gives a Space's default search provider, and with `all` every enabled one.
 - `open_window`, `open_blank_window` and `open_quick_window` open a window over an allowed, unlocked Space, at an `http` or `https` address where they take one. `open_private_window` answers only with the window's ID; an address opens only in a new Private Window.

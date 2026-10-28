@@ -4605,6 +4605,10 @@
     "agent-pages-rest-when-left-alone": {
       "category": "improved",
       "message": "A page an agent stops using goes back to resting like any background tab, a minute after the agent's last action there, instead of rendering until the agent disconnects. It saves CPU and battery when an agent has read many pages."
+    },
+    "agent-answers-cost-fewer-tokens": {
+      "category": "improved",
+      "message": "Agents spend fewer tokens reading Crest's answers. Answers come as compact JSON, a list of Spaces leaves out their icons unless asked for them, and search providers give the default unless asked for all."
     }
   }
 }

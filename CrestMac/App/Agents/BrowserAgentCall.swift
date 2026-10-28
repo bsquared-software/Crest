@@ -39,10 +39,12 @@ struct BrowserAgentCall {
 extension AgentToolResult {
     /// `value` as JSON the model reads, after `note` when there is one. The
     /// text is the whole result: clients that find structured content show
-    /// the model only that, which would lose the note.
+    /// the model only that, which would lose the note. It is compact, since
+    /// the model reads it as tokens and indentation is a fifth to a third of
+    /// them.
     static func data(_ value: some Encodable, note: String? = nil) -> Self {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let text = (try? encoder.encode(value)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
         return Self(content: [.text(note.map { "\($0)\n\(text)" } ?? text)], isError: false)
     }

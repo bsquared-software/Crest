@@ -5,6 +5,7 @@ extension BrowserMacAgents {
 
     private struct SearchQuery: Decodable {
         let space: UUID?
+        let all: Bool?
     }
 
     private struct SearchCatalog: Encodable {
@@ -14,7 +15,7 @@ extension BrowserMacAgents {
             let shortcuts: [String]
             let url: String
         }
-        let providers: [Provider]
+        let providers: [Provider]?
         let defaultProvider: Provider?
     }
 
@@ -56,9 +57,11 @@ extension BrowserMacAgents {
         func describe(_ provider: SearchProvider) -> SearchCatalog.Provider {
             .init(id: provider.name, name: provider.title, shortcuts: provider.shortcuts, url: provider.searchTemplate)
         }
+        // Two dozen providers are a thousand tokens or more, and an agent
+        // searching needs only the default, so the rest come when asked for.
         return .data(
             SearchCatalog(
-                providers: catalog.providers.filter { catalog.isEnabled($0) }.map(describe),
+                providers: query.all == true ? catalog.providers.filter { catalog.isEnabled($0) }.map(describe) : nil,
                 defaultProvider: catalog.provider(for: space.settings.browsingPreferences, isPrivate: false).map(
                     describe)))
     }
