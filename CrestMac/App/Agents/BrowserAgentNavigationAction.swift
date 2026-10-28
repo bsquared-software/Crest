@@ -5,23 +5,29 @@ import Foundation
 struct BrowserAgentNavigationAction: Decodable, Sendable {
     // MARK: - Static Variables
 
-    static let back = Self(name: "back") { core, _ in core.stepHistory(by: -1) }
-    static let forward = Self(name: "forward") { core, _ in core.stepHistory(by: 1) }
-    static let reload = Self(name: "reload") { _, engine in engine.reload() }
+    static let back = Self(name: "back", stepsThroughHistory: true) { core, _ in core.stepHistory(by: -1) }
+    static let forward = Self(name: "forward", stepsThroughHistory: true) { core, _ in core.stepHistory(by: 1) }
+    static let reload = Self(name: "reload", stepsThroughHistory: false) { _, engine in engine.reload() }
 
     static let all: [BrowserAgentNavigationAction] = [back, forward, reload]
 
     // MARK: - Variables
 
     let name: String
+    /// Whether the move steps through the tab's history, which goes nowhere
+    /// from either end of it.
+    let stepsThroughHistory: Bool
     /// Steps through the tab's history as the core keeps it, or asks its
     /// engine to reload.
     private let move: @MainActor @Sendable (CorePage, EnginePage) -> Void
 
     // MARK: - Initializers
 
-    private init(name: String, move: @escaping @MainActor @Sendable (CorePage, EnginePage) -> Void) {
+    private init(
+        name: String, stepsThroughHistory: Bool, move: @escaping @MainActor @Sendable (CorePage, EnginePage) -> Void
+    ) {
         self.name = name
+        self.stepsThroughHistory = stepsThroughHistory
         self.move = move
     }
 

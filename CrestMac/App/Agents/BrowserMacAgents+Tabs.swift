@@ -57,6 +57,18 @@ extension BrowserMacAgents {
         let shown: Bool
     }
 
+    // MARK: - Static Variables
+
+    /// How long navigate waits for the tab to commit to where it goes before
+    /// it answers.
+    private static let commitTimeout = Duration.seconds(5)
+    /// How long navigate then waits for the tab's record to take the address
+    /// the page committed to.
+    private static let recordTimeout = Duration.seconds(1)
+    /// How long a step back or forward through history may take to start
+    /// before navigate takes it that there was nowhere to go.
+    private static let stepGrace = Duration.seconds(1)
+
     // MARK: - Actions - Identity
 
     func identify(_ call: BrowserAgentCall) async throws(BrowserAgentFailure) -> AgentToolResult {
@@ -155,13 +167,82 @@ extension BrowserMacAgents {
         guard url != nil || navigation.action != nil else { throw .invalidArguments("give url or action.") }
         return try await serially(on: navigation.tab) { () async throws(BrowserAgentFailure) -> AgentToolResult in
             let page = try self.page(for: navigation.tab, call)
+            let committed = page.committedNavigationCount
+            let address = page.live.url
+            var accepted = false
             if let url {
-                page.corePage.load(url)
+                accepted = page.corePage.load(url)
+                // A load the core refused starts nothing to wait for.
+                guard accepted else { throw .refused("Crest didn't load that address.") }
                 self.note(.loadedPage, url.absoluteString, call)
             } else {
                 navigation.action?.perform(on: page.corePage, page.enginePage)
             }
-            return .data(["tab": try self.listing(navigation.tab, call)])
+            // The answer describes where the tab went, not the page it left: it
+            // waits for the navigation to commit, or for the address to change
+            // with no load under way, as a move within the page does, for a
+            // moment at most. The address changes as a load starts, so that alone
+            // is no sign of arrival. A load that stops without committing, as a
+            // failed one does, and one with nowhere to go, such as back from the
+            // first page, are answered at once: a step through history that shows
+            // no sign of moving within a moment went nowhere.
+            let start = ContinuousClock.now
+            let deadline = start + Self.commitTimeout
+            let stepping = url == nil && navigation.action?.stepsThroughHistory == true
+            var started = false
+            @MainActor func arrived() -> Bool {
+                // A page moved to another engine starts blank, with no address yet,
+                // which is not an arrival.
+                page.committedNavigationCount != committed
+                    || (page.live.url != nil && page.live.url != address && !page.live.isLoading)
+            }
+            while !arrived(), ContinuousClock.now < deadline {
+                if page.live.isLoading || page.live.pendingURL != nil {
+                    started = true
+                } else if started || (stepping && ContinuousClock.now > start + Self.stepGrace) {
+                    break
+                }
+                // A cancelled call stops waiting rather than spinning to the deadline.
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { break }
+            }
+            // The tab's record takes the new address a moment after the page
+            // reports the commit, so the answer waits for it, briefly.
+            var listing = try self.listing(navigation.tab, call)
+            if arrived(), let live = page.live.url {
+                var components = URLComponents(string: live)
+                components?.fragment = nil
+                let expected = components?.string
+                let recorded = ContinuousClock.now + Self.recordTimeout
+                while listing.url != expected, ContinuousClock.now < recorded {
+                    do { try await Task.sleep(for: .milliseconds(20)) } catch { break }
+                    listing = try self.listing(navigation.tab, call)
+                }
+                // A record still behind gives the address the page committed to,
+                // which is where the tab went.
+                if listing.url != expected {
+                    listing = TabListing(
+                        id: listing.id, space: listing.space, title: listing.title, url: expected,
+                        placement: listing.placement, isPinned: listing.isPinned, isSaved: listing.isSaved,
+                        folders: listing.folders, inUse: listing.inUse, shown: listing.shown)
+                }
+            }
+            // A load still under way past the limit has not left the page yet,
+            // which the agent hears rather than taking that page for the new one.
+            let loading = page.live.isLoading || page.live.pendingURL != nil
+            var note: String?
+            if !arrived(), loading {
+                note = "The new page is still loading, so this is the page the tab was on. wait_for waits for it."
+            } else if !arrived(), started || (accepted && page.live.failure != nil) {
+                // A load can fail before the wait first sees it start; only a load
+                // asked for here is judged by the failure the page shows, which a
+                // step through history may have kept from before.
+                note = "The new page didn't load, so this is the page the tab was on."
+            } else if !arrived(), stepping, let action = navigation.action {
+                note =
+                    "The tab hasn't moved: it may have no page to go \(action.name) to, "
+                    + "or the page may be asking whether to leave."
+            }
+            return .data(["tab": listing], note: note)
         }
     }
 
