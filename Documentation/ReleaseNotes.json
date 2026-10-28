@@ -4597,6 +4597,10 @@
     "agent-navigate-answers-destination": {
       "category": "fixed",
       "message": "When an agent navigates a tab, goes back or goes forward, Crest answers with the page the tab went to rather than the one it left."
+    },
+    "agent-snapshot-parts-and-paths": {
+      "category": "new",
+      "message": "Agents can read one part of a page whole by asking for an element's uid. Links to a page's own origin are given as paths, which navigate also takes, so more of a long page fits in one read."
     }
   }
 }

@@ -106,6 +106,11 @@ extension BrowserMacAgents {
         let limit: Int?
     }
 
+    private struct OutlineReading: Decodable {
+        let tab: UUID
+        let uid: String?
+    }
+
     private struct PageText: Decodable {
         let url: String
         let title: String
@@ -150,6 +155,7 @@ extension BrowserMacAgents {
         let title: String
         let outline: String
         let truncated: Bool
+        let hidden: Bool
     }
 
     private struct ConsoleListing: Encodable {
@@ -243,12 +249,24 @@ extension BrowserMacAgents {
     // MARK: - Actions - Reading
 
     func takeSnapshot(_ call: BrowserAgentCall) async throws(BrowserAgentFailure) -> AgentToolResult {
-        let reference = try call.arguments(BrowserMacAgents.TabReference.self)
-        return try await serially(on: reference.tab) { () async throws(BrowserAgentFailure) -> AgentToolResult in
-            let page = try await self.settledPage(for: reference.tab, call)
-            let outline = try await self.run(BrowserAgentPageScript.snapshot, on: page).decoded(Outline.self)
+        let reading = try call.arguments(OutlineReading.self)
+        return try await serially(on: reading.tab) { () async throws(BrowserAgentFailure) -> AgentToolResult in
+            let page = try await self.settledPage(for: reading.tab, call)
+            let answer = try await self.run(BrowserAgentPageScript.snapshot(of: reading.uid), on: page)
+            if let uid = reading.uid, answer["error"] != nil { throw .unknownElement(uid) }
+            let outline = try answer.decoded(Outline.self)
             var text = "Page: \(outline.title)\nAddress: \(outline.url)\n\n\(outline.outline)"
-            if outline.truncated { text += "\n\n(The outline was cut short. Scroll or act on what is shown.)" }
+            if outline.hidden {
+                text += "(That part of the page is hidden.)"
+            } else if reading.uid != nil, outline.outline.isEmpty {
+                text += "(That part of the page shows nothing an outline names.)"
+            }
+            // The outline follows the page's order, not what is on screen, so
+            // scrolling reads no further; a part read on its own is read whole.
+            if outline.truncated {
+                text +=
+                    "\n\n(The outline was cut short. Take a snapshot with the uid of a part shown here to read it whole.)"
+            }
             return .message(text)
         }
     }
