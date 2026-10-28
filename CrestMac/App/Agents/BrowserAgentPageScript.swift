@@ -14,9 +14,16 @@ struct BrowserAgentPageScript {
         if (state.document !== document) {
           state.document = document; state.uids = new Map(); state.elements = new WeakMap(); state.next = 1;
         }
+        // A form's named fields shadow its own properties: a field named "title" or "hidden" stands in for
+        // the form's. Elements are read through the DOM's own accessors, which a page cannot shadow.
+        const isConnectedOf = Object.getOwnPropertyDescriptor(Node.prototype, "isConnected").get;
+        const tagName = Object.getOwnPropertyDescriptor(Element.prototype, "tagName").get;
+        const tagOf = (node) => tagName.call(node);
+        const editableOf = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "isContentEditable").get;
+        const editable = (node) => node instanceof HTMLElement && editableOf.call(node);
         const element = (uid) => {
           const found = state.uids.get(uid)?.deref();
-          return found && found.isConnected ? found : null;
+          return found && isConnectedOf.call(found) ? found : null;
         };
         """#
 
@@ -26,6 +33,16 @@ struct BrowserAgentPageScript {
     static let snapshot = Self(
         source: state + #"""
             const limit = 60000;
+            const shadowRootOf = Object.getOwnPropertyDescriptor(Element.prototype, "shadowRoot").get;
+            const childNodesOf = Object.getOwnPropertyDescriptor(Node.prototype, "childNodes").get;
+            const nodeTypeOf = Object.getOwnPropertyDescriptor(Node.prototype, "nodeType").get;
+            const parentOf = Object.getOwnPropertyDescriptor(Node.prototype, "parentElement").get;
+            const textOf = Object.getOwnPropertyDescriptor(Node.prototype, "textContent").get;
+            const innerTextOf = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "innerText").get;
+            // The document's named elements shadow its properties the same way, as an <img name="body"> does.
+            const ofDocument = (name) => Object.getOwnPropertyDescriptor(Document.prototype, name).get.call(document);
+            const attribute = (node, name) => Element.prototype.getAttribute.call(node, name);
+            const has = (node, name) => Element.prototype.hasAttribute.call(node, name);
             const lines = [];
             let size = 0;
             let truncated = false;
@@ -42,32 +59,38 @@ struct BrowserAgentPageScript {
               "form", "table", "row", "cell", "columnheader", "list", "listitem", "dialog", "group", "iframe", "region",
               "progressbar", "alert", "status", "tablist", "menu", "tree", "grid"]);
             const roleOf = (node) => {
-              const explicit = node.getAttribute("role")?.split(" ")[0];
+              const explicit = attribute(node, "role")?.split(" ")[0];
               if (explicit) return explicit;
-              if (node.tagName === "INPUT") return inputs[node.type] ?? "textbox";
-              if (node.tagName === "A" && !node.hasAttribute("href")) return null;
-              if (node.tagName === "SECTION" && (node.hasAttribute("aria-label") || node.hasAttribute("aria-labelledby"))) return "region";
-              if (node.isContentEditable && node.parentElement?.isContentEditable !== true) return "textbox";
-              return roles[node.tagName] ?? null;
+              const tag = tagOf(node);
+              if (tag === "INPUT") return inputs[node.type] ?? "textbox";
+              if (tag === "A" && !has(node, "href")) return null;
+              if (tag === "SECTION" && (has(node, "aria-label") || has(node, "aria-labelledby"))) return "region";
+              if (editable(node) && !editable(parentOf.call(node))) return "textbox";
+              return roles[tag] ?? null;
             };
-            const clean = (text) => (text ?? "").replace(/\s+/g, " ").trim().slice(0, 200);
+            const clean = (text) => String(text ?? "").replace(/\s+/g, " ").trim().slice(0, 200);
             const nameOf = (node, role) => {
-              const label = node.getAttribute("aria-label");
+              const label = attribute(node, "aria-label");
               if (label) return clean(label);
-              const by = node.getAttribute("aria-labelledby");
-              if (by) return clean(by.split(" ").map((id) => document.getElementById(id)?.textContent).join(" "));
+              const by = attribute(node, "aria-labelledby");
+              if (by) return clean(by.split(" ").map((id) => Document.prototype.getElementById.call(document, id))
+                .map((found) => found && textOf.call(found)).join(" "));
               // A label's own words, not those of a control inside it, such as a menu's options.
-              const own = (label) => [...label.childNodes].filter((child) => child.nodeType === Node.TEXT_NODE ||
-                (child.nodeType === Node.ELEMENT_NODE && !child.matches("input, select, textarea, button"))).map((child) => child.textContent).join(" ");
-              if (node.labels?.length) return clean([...node.labels].map(own).join(" "));
-              if (node.alt) return clean(node.alt);
+              const own = (label) => [...childNodesOf.call(label)].filter((child) => nodeTypeOf.call(child) === Node.TEXT_NODE ||
+                (nodeTypeOf.call(child) === Node.ELEMENT_NODE && !Element.prototype.matches.call(child, "input, select, textarea, button")))
+                .map((child) => textOf.call(child)).join(" ");
+              // A form has no labels of its own, only, perhaps, a field named "labels".
+              if (tagOf(node) !== "FORM" && node.labels?.length) return clean([...node.labels].map(own).join(" "));
+              const alt = attribute(node, "alt");
+              if (alt) return clean(alt);
               if (["link", "button", "heading", "option", "tab", "menuitem", "cell", "columnheader", "listitem", "treeitem"].includes(role))
-                return clean(node.innerText ?? node.textContent);
-              return clean(node.title || node.placeholder || "");
+                return clean(node instanceof HTMLElement ? innerTextOf.call(node) : textOf.call(node));
+              return clean(attribute(node, "title") || attribute(node, "placeholder") || "");
             };
             const hidden = (node) => {
-              if (node.getAttribute("aria-hidden") === "true" || node.hidden) return true;
-              if (node.checkVisibility) return !node.checkVisibility({ checkOpacity: false, checkVisibilityCSS: true });
+              if (attribute(node, "aria-hidden") === "true" || has(node, "hidden")) return true;
+              if (Element.prototype.checkVisibility)
+                return !Element.prototype.checkVisibility.call(node, { checkOpacity: false, checkVisibilityCSS: true });
               const style = getComputedStyle(node);
               return style.display === "none" || style.visibility === "hidden";
             };
@@ -91,43 +114,46 @@ struct BrowserAgentPageScript {
               const name = nameOf(node, role);
               if (name) parts.push(JSON.stringify(name));
               parts.push(`[uid=${uidOf(node)}]`);
-              if (role === "heading") parts.push(`[level=${node.tagName.slice(1) || node.getAttribute("aria-level") || 2}]`);
-              if (node.disabled || node.getAttribute("aria-disabled") === "true") parts.push("[disabled]");
-              if (node.checked || node.getAttribute("aria-checked") === "true") parts.push("[checked]");
-              if (node.getAttribute("aria-expanded")) parts.push(`[expanded=${node.getAttribute("aria-expanded")}]`);
-              if (node.selected || node.getAttribute("aria-selected") === "true") parts.push("[selected]");
-              if (node === document.activeElement) parts.push("[focused]");
-              if (node.tagName === "A" && node.href) parts.push(`[href=${node.href.slice(0, 300)}]`);
-              if (node.tagName === "INPUT" && node.type === "password") parts.push("[password]");
+              const tag = tagOf(node);
+              if (role === "heading") parts.push(`[level=${tag.slice(1) || attribute(node, "aria-level") || 2}]`);
+              if (node.disabled === true || attribute(node, "aria-disabled") === "true") parts.push("[disabled]");
+              if (node.checked === true || attribute(node, "aria-checked") === "true") parts.push("[checked]");
+              if (attribute(node, "aria-expanded")) parts.push(`[expanded=${attribute(node, "aria-expanded")}]`);
+              if (node.selected === true || attribute(node, "aria-selected") === "true") parts.push("[selected]");
+              if (node === ofDocument("activeElement")) parts.push("[focused]");
+              if (tag === "A" && node.href) parts.push(`[href=${node.href.slice(0, 300)}]`);
+              if (tag === "INPUT" && node.type === "password") parts.push("[password]");
               else if ("value" in node && ["textbox", "searchbox", "combobox", "spinbutton", "slider"].includes(role) && node.value)
                 parts.push(`[value=${JSON.stringify(String(node.value).slice(0, 200))}]`);
               return parts.join(" ");
             };
             const walk = (node, depth) => {
-              for (const child of node.childNodes) {
+              for (const child of childNodesOf.call(node)) {
                 if (truncated) return;
-                if (child.nodeType === Node.TEXT_NODE) {
+                if (nodeTypeOf.call(child) === Node.TEXT_NODE) {
                   const text = clean(child.textContent);
                   if (text) emit(depth, `- text ${JSON.stringify(text)}`);
                   continue;
                 }
-                if (child.nodeType !== Node.ELEMENT_NODE) continue;
-                if (["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "SVG", "HEAD", "META", "LINK"].includes(child.tagName.toUpperCase())) continue;
+                if (nodeTypeOf.call(child) !== Node.ELEMENT_NODE) continue;
+                if (["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "SVG", "HEAD", "META", "LINK"].includes(tagOf(child).toUpperCase())) continue;
                 if (hidden(child)) continue;
                 const role = roleOf(child);
                 if (role && (interactive.has(role) || landmarks.has(role))) {
                   emit(depth, describe(child, role));
                   // A control's own text is its name; its children add nothing.
                   if (!interactive.has(role) || role === "listitem") walk(child, depth + 1);
-                  if (child.shadowRoot) walk(child.shadowRoot, depth + 1);
+                  const shadow = shadowRootOf.call(child);
+                  if (shadow) walk(shadow, depth + 1);
                 } else {
                   walk(child, depth);
-                  if (child.shadowRoot) walk(child.shadowRoot, depth);
+                  const shadow = shadowRootOf.call(child);
+                  if (shadow) walk(shadow, depth);
                 }
               }
             };
-            walk(document.body ?? document.documentElement, 0);
-            return { url: location.href, title: document.title, outline: lines.join("\n"), truncated };
+            walk(ofDocument("body") ?? ofDocument("documentElement"), 0);
+            return { url: location.href, title: ofDocument("title"), outline: lines.join("\n"), truncated };
             """#)
 
     // MARK: - Variables
@@ -147,8 +173,8 @@ struct BrowserAgentPageScript {
                 const box = target.getBoundingClientRect();
                 return { x: box.left + box.width / 2, y: box.top + box.height / 2, left: box.left, top: box.top,
                   width: box.width, height: box.height, viewportWidth: innerWidth, viewportHeight: innerHeight,
-                  tag: target.tagName.toLowerCase(), editable: target.isContentEditable || ["INPUT", "TEXTAREA"].includes(target.tagName),
-                  menu: target.tagName === "SELECT" };
+                  tag: tagOf(target).toLowerCase(), editable: editable(target) || ["INPUT", "TEXTAREA"].includes(tagOf(target)),
+                  menu: tagOf(target) === "SELECT" };
                 """)
     }
 
@@ -161,7 +187,7 @@ struct BrowserAgentPageScript {
                 const target = element(\(json(uid)));
                 if (!target) return { error: "unknown" };
                 const value = \(json(value));
-                if (target.tagName === "SELECT") {
+                if (tagOf(target) === "SELECT") {
                   const option = [...target.options].find((item) => item.label === value || item.value === value || item.text.trim() === value);
                   if (!option) return { error: "option" };
                   target.value = option.value;
@@ -169,10 +195,10 @@ struct BrowserAgentPageScript {
                   target.dispatchEvent(new Event("change", { bubbles: true }));
                   return { chosen: option.label || option.text };
                 }
-                if (!(target.isContentEditable || ["INPUT", "TEXTAREA"].includes(target.tagName))) return { error: "editable" };
+                if (!(editable(target) || ["INPUT", "TEXTAREA"].includes(tagOf(target)))) return { error: "editable" };
                 target.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
                 target.focus();
-                if (target.isContentEditable) {
+                if (editable(target)) {
                   const range = document.createRange();
                   range.selectNodeContents(target);
                   const selection = getSelection();
@@ -182,7 +208,7 @@ struct BrowserAgentPageScript {
                 } else {
                   target.select?.();
                   if (!value) {
-                    const prototype = target.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                    const prototype = tagOf(target) === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
                     Object.getOwnPropertyDescriptor(prototype, "value").set.call(target, "");
                     target.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
                   }
@@ -203,6 +229,14 @@ struct BrowserAgentPageScript {
                   "TEXTAREA", "SELECT", "OPTION"]);
                 const blocks = new Set(["P", "DIV", "SECTION", "ARTICLE", "MAIN", "HEADER", "FOOTER", "ASIDE", "NAV",
                   "FIGURE", "FIGCAPTION", "TABLE", "TR", "UL", "OL", "DL", "DT", "DD", "FORM", "FIELDSET", "DETAILS", "SUMMARY"]);
+                // A form's named fields shadow its own properties; read elements through the DOM's accessors.
+                const tagName = Object.getOwnPropertyDescriptor(Element.prototype, "tagName").get;
+                const childNodesOf = Object.getOwnPropertyDescriptor(Node.prototype, "childNodes").get;
+                const childrenOf = Object.getOwnPropertyDescriptor(Element.prototype, "children").get;
+                const nodeTypeOf = Object.getOwnPropertyDescriptor(Node.prototype, "nodeType").get;
+                const checkVisibility = Element.prototype.checkVisibility;
+                const tagOf = (node) => tagName.call(node);
+                const ofDocument = (name) => Object.getOwnPropertyDescriptor(Document.prototype, name).get.call(document);
                 const out = [];
                 let size = 0;
                 let truncated = false;
@@ -212,51 +246,55 @@ struct BrowserAgentPageScript {
                   out.push(text); size += text.length;
                 };
                 const hidden = (node) => {
-                  if (node.hidden || node.getAttribute("aria-hidden") === "true") return true;
-                  if (!node.checkVisibility) return false;
+                  if (Element.prototype.hasAttribute.call(node, "hidden")
+                    || Element.prototype.getAttribute.call(node, "aria-hidden") === "true") return true;
+                  if (!checkVisibility) return false;
                   // A display: contents wrapper has no box of its own, so only the visibility it
                   // passes down, its own or an ancestor's, hides what it holds.
                   const style = getComputedStyle(node);
                   if (style.display === "contents") return style.visibility !== "visible";
-                  return !node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true, opacityProperty: true,
+                  return !checkVisibility.call(node, { checkOpacity: true, checkVisibilityCSS: true, opacityProperty: true,
                     visibilityProperty: true });
                 };
                 const inline = (node) => {
-                  if (node.nodeType === Node.TEXT_NODE) return node.textContent.replace(/\\s+/g, " ");
-                  if (node.nodeType !== Node.ELEMENT_NODE || skipped.has(node.tagName) || hidden(node)) return "";
-                  const text = [...node.childNodes].map(inline).join("");
-                  if (node.tagName === "A" && node.href && text.trim()) return `[${text.trim()}](${node.href})`;
-                  if (node.tagName === "IMG") return node.alt ? `![${node.alt}]` : "";
-                  if (node.tagName === "CODE") return text ? "`" + text + "`" : "";
-                  if (node.tagName === "BR") return "\\n";
-                  if (node.tagName === "STRONG" || node.tagName === "B") return text.trim() ? `**${text.trim()}**` : text;
+                  if (nodeTypeOf.call(node) === Node.TEXT_NODE) return node.textContent.replace(/\\s+/g, " ");
+                  if (nodeTypeOf.call(node) !== Node.ELEMENT_NODE || skipped.has(tagOf(node)) || hidden(node)) return "";
+                  const text = [...childNodesOf.call(node)].map(inline).join("");
+                  if (tagOf(node) === "A" && node.href && text.trim()) return `[${text.trim()}](${node.href})`;
+                  if (tagOf(node) === "IMG") return node.alt ? `![${node.alt}]` : "";
+                  if (tagOf(node) === "CODE") return text ? "`" + text + "`" : "";
+                  if (tagOf(node) === "BR") return "\\n";
+                  if (tagOf(node) === "STRONG" || tagOf(node) === "B") return text.trim() ? `**${text.trim()}**` : text;
                   return text;
                 };
                 const walk = (node, depth) => {
-                  if (truncated || node.nodeType !== Node.ELEMENT_NODE || skipped.has(node.tagName) || hidden(node)) return;
-                  const tag = node.tagName;
+                  if (truncated || nodeTypeOf.call(node) !== Node.ELEMENT_NODE || skipped.has(tagOf(node)) || hidden(node)) return;
+                  const tag = tagOf(node);
                   const heading = /^H([1-6])$/.exec(tag);
                   if (heading) { const text = inline(node).trim(); if (text) push("#".repeat(+heading[1]) + " " + text + "\\n\\n"); return; }
                   if (tag === "LI") {
                     // A nested list follows its item, indented, rather than running into its text.
-                    const own = [...node.childNodes].filter((child) => !["UL", "OL"].includes(child.tagName)).map(inline).join("").trim();
+                    const own = [...childNodesOf.call(node)]
+                      .filter((child) => nodeTypeOf.call(child) !== Node.ELEMENT_NODE || !["UL", "OL"].includes(tagOf(child)))
+                      .map(inline).join("").trim();
                     if (own) push("  ".repeat(Math.max(depth, 0)) + "- " + own + "\\n");
-                    for (const child of node.children) if (["UL", "OL"].includes(child.tagName)) walk(child, depth);
+                    for (const child of childrenOf.call(node)) if (["UL", "OL"].includes(tagOf(child))) walk(child, depth);
                     return;
                   }
                   if (tag === "PRE") { push("```\\n" + node.innerText + "\\n```\\n\\n"); return; }
                   if (tag === "BLOCKQUOTE") { const text = inline(node).trim(); if (text) push("> " + text + "\\n\\n"); return; }
-                  if (tag === "UL" || tag === "OL") { for (const child of node.children) walk(child, depth + 1); push("\\n"); return; }
-                  const hasBlocks = [...node.children].some((child) => blocks.has(child.tagName) || /^H[1-6]$/.test(child.tagName)
-                    || ["LI", "PRE", "BLOCKQUOTE", "UL", "OL"].includes(child.tagName));
+                  if (tag === "UL" || tag === "OL") { for (const child of childrenOf.call(node)) walk(child, depth + 1); push("\\n"); return; }
+                  const hasBlocks = [...childrenOf.call(node)].some((child) => blocks.has(tagOf(child)) || /^H[1-6]$/.test(tagOf(child))
+                    || ["LI", "PRE", "BLOCKQUOTE", "UL", "OL"].includes(tagOf(child)));
                   if (!hasBlocks) { const text = inline(node).trim(); if (text) push(text + "\\n\\n"); return; }
-                  for (const child of node.childNodes) {
-                    if (child.nodeType === Node.TEXT_NODE) { const text = child.textContent.trim(); if (text) push(text + "\\n\\n"); }
+                  for (const child of childNodesOf.call(node)) {
+                    if (nodeTypeOf.call(child) === Node.TEXT_NODE) { const text = child.textContent.trim(); if (text) push(text + "\\n\\n"); }
                     else walk(child, depth);
                   }
                 };
-                if (document.body) walk(document.body, -1);
-                return { url: location.href, title: document.title, text: out.join("").replace(/\\n{3,}/g, "\\n\\n").trim(), truncated };
+                const body = ofDocument("body");
+                if (body) walk(body, -1);
+                return { url: location.href, title: ofDocument("title"), text: out.join("").replace(/\\n{3,}/g, "\\n\\n").trim(), truncated };
                 """)
     }
 
@@ -266,8 +304,11 @@ struct BrowserAgentPageScript {
         Self(
             source: """
                 const text = \(json(text));
-                if (text === null) return document.readyState === "complete";
-                return (document.body?.innerText ?? "").includes(text);
+                // A page's named elements shadow the document's properties, so read them through its accessors.
+                const ofDocument = (name) => Object.getOwnPropertyDescriptor(Document.prototype, name).get.call(document);
+                if (text === null) return ofDocument("readyState") === "complete";
+                const body = ofDocument("body");
+                return (body?.innerText ?? "").includes(text);
                 """)
     }
 
