@@ -163,10 +163,17 @@ extension BrowserMacAgents {
 
     func navigate(_ call: BrowserAgentCall) async throws(BrowserAgentFailure) -> AgentToolResult {
         let navigation = try call.arguments(Navigation.self)
-        let url = try navigation.url.map(Self.address)
-        guard url != nil || navigation.action != nil else { throw .invalidArguments("give url or action.") }
+        guard navigation.url != nil || navigation.action != nil else {
+            throw .invalidArguments("give url or action.")
+        }
         return try await serially(on: navigation.tab) { () async throws(BrowserAgentFailure) -> AgentToolResult in
             let page = try self.page(for: navigation.tab, call)
+            // A snapshot gives a link to the page's own origin as a path, which
+            // goes where the link does from the page the tab shows.
+            let base = page.live.url.flatMap { URL(string: $0) }
+            let url = try navigation.url.map { (text) throws(BrowserAgentFailure) -> URL in
+                try Self.address(text, relativeTo: base)
+            }
             let committed = page.committedNavigationCount
             let address = page.live.url
             var accepted = false
@@ -318,7 +325,20 @@ extension BrowserMacAgents {
 
     /// `text` as an address an agent may open: http or https, with a host.
     static func address(_ text: String) throws(BrowserAgentFailure) -> URL {
-        guard let url = URL(string: text), let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+        try address(text, relativeTo: nil)
+    }
+
+    /// `text` as an http or https address, or as a path on `base`'s origin
+    /// when it reads as one, such as `/news`, `./next`, `?page=2` or `#top`.
+    /// A bare host such as `example.com` stays an address and is refused, as
+    /// before, rather than read as a path on the current site.
+    static func address(_ text: String, relativeTo base: URL?) throws(BrowserAgentFailure) -> URL {
+        let isPath =
+            (text.hasPrefix("/") && !text.hasPrefix("//")) || text.hasPrefix("./") || text.hasPrefix("../")
+            || text.hasPrefix("?") || text.hasPrefix("#")
+        guard let url = URL(string: text, relativeTo: isPath ? base : nil)?.absoluteURL,
+            let scheme = url.scheme?.lowercased(),
+            scheme == "http" || scheme == "https",
             url.host() != nil
         else { throw .unsupportedAddress }
         return url

@@ -30,8 +30,8 @@ struct BrowserAgentPageScript {
     /// The page as an accessibility outline: each meaningful element's role,
     /// name and state with a uid, and the text between them, within a bound.
     /// A password field's value is never part of it.
-    static let snapshot = Self(
-        source: state + #"""
+    private static let outline = Self(
+        source: #"""
             const limit = 60000;
             const shadowRootOf = Object.getOwnPropertyDescriptor(Element.prototype, "shadowRoot").get;
             const childNodesOf = Object.getOwnPropertyDescriptor(Node.prototype, "childNodes").get;
@@ -121,7 +121,15 @@ struct BrowserAgentPageScript {
               if (attribute(node, "aria-expanded")) parts.push(`[expanded=${attribute(node, "aria-expanded")}]`);
               if (node.selected === true || attribute(node, "aria-selected") === "true") parts.push("[selected]");
               if (node === ofDocument("activeElement")) parts.push("[focused]");
-              if (tag === "A" && node.href) parts.push(`[href=${node.href.slice(0, 300)}]`);
+              // A link to the page's own origin is its path, which navigate takes too: the origin
+              // repeated on every link is a fifth of a busy page's outline. Anything else, such as a
+              // blob: link, a link with credentials or a path that reads as a host (//x), keeps its whole address.
+              if (tag === "A" && node.href) {
+                const own = location.origin !== "null" && /^https?:$/.test(node.protocol) && node.protocol === location.protocol
+                  && node.host === location.host && !node.username && !node.password && !node.pathname.startsWith("//");
+                const href = own ? node.pathname + node.search + node.hash : node.href;
+                parts.push(`[href=${href.slice(0, 300)}]`);
+              }
               if (tag === "INPUT" && node.type === "password") parts.push("[password]");
               else if ("value" in node && ["textbox", "searchbox", "combobox", "spinbutton", "slider"].includes(role) && node.value)
                 parts.push(`[value=${JSON.stringify(String(node.value).slice(0, 200))}]`);
@@ -152,8 +160,20 @@ struct BrowserAgentPageScript {
                 }
               }
             };
-            walk(ofDocument("body") ?? ofDocument("documentElement"), 0);
-            return { url: location.href, title: ofDocument("title"), outline: lines.join("\n"), truncated };
+            const root = scope === null ? (ofDocument("body") ?? ofDocument("documentElement")) : element(scope);
+            if (!root) return { error: "unknown" };
+            if (scope === null) {
+              walk(root, 0);
+            } else if (!hidden(root)) {
+              // One part of the page: the element itself, then what it holds.
+              const role = roleOf(root);
+              if (role) emit(0, describe(root, role));
+              walk(root, role ? 1 : 0);
+              const shadow = shadowRootOf.call(root);
+              if (shadow) walk(shadow, role ? 1 : 0);
+            }
+            return { url: location.href, title: ofDocument("title"), outline: lines.join("\n"), truncated,
+              hidden: scope !== null && hidden(root) };
             """#)
 
     // MARK: - Variables
@@ -215,6 +235,12 @@ struct BrowserAgentPageScript {
                 }
                 return { ready: true };
                 """)
+    }
+
+    /// The page as an outline, or only the part of it the element `uid` holds,
+    /// the element first; or an error when the page has no such element now.
+    static func snapshot(of uid: String?) -> Self {
+        Self(source: state + "const scope = \(json(uid));\n" + outline.source)
     }
 
     /// The page's readable text as Markdown, within `limit` characters:
