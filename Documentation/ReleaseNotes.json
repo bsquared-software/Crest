@@ -4601,6 +4601,10 @@
     "agent-snapshot-parts-and-paths": {
       "category": "new",
       "message": "Agents can read one part of a page whole by asking for an element's uid. Links to a page's own origin are given as paths, which navigate also takes, so more of a long page fits in one read."
+    },
+    "agent-pages-rest-when-left-alone": {
+      "category": "improved",
+      "message": "A page an agent stops using goes back to resting like any background tab, a minute after the agent's last action there, instead of rendering until the agent disconnects. It saves CPU and battery when an agent has read many pages."
     }
   }
 }

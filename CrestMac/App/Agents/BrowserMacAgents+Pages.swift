@@ -243,6 +243,10 @@ extension BrowserMacAgents {
     /// How long after input a page is given for a load the input started to
     /// begin, as a click on a link or a submit button does.
     private static let loadGrace = Duration.seconds(1)
+    /// How long a page an agent holds keeps rendering after the agent's
+    /// latest call on it: long enough to span an agent's turn, since a page
+    /// that rests loses focus, which can close a menu the agent opened.
+    private static let restAfter = Duration.seconds(60)
     private static let untrustedNote =
         "This page’s engine took the input as script events, which some pages ignore. If nothing changed, try another way."
 
@@ -434,6 +438,9 @@ extension BrowserMacAgents {
             throw .refused("The page shows no dialog an agent may answer.")
         }
         page.corePage.answer(AnswerScriptDialog(promptID: asked.promptID, accepted: answer.accept, text: answer.text))
+        // The answer itself never waits behind the tab's work, which the
+        // dialog may be blocking.
+        renewRest(of: answer.tab, page, call)
         return .message(answer.accept ? "Accepted the page's dialog." : "Dismissed the page's dialog.")
     }
 
@@ -541,7 +548,17 @@ extension BrowserMacAgents {
                 try? await Task.sleep(for: .milliseconds(150))
             }
         }
+        renewRest(of: tabID, page, call)
         return page
+    }
+
+    /// Starts the rest of tab `tabID`'s page again when the connection holds
+    /// it: a held page renders as though shown, animations and all, so one
+    /// the agent moved on from rests a while after its latest use, until the
+    /// agent comes back.
+    func renewRest(of tabID: UUID, _ page: BrowserPage, _ call: BrowserAgentCall) {
+        guard call.link.heldPages[tabID] == page.enginePage.id else { return }
+        rest(tabID, of: call.link, after: Self.restAfter)
     }
 
     /// Whether `address` shows a web page, or a blank one or none yet, which

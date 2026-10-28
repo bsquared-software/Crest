@@ -177,6 +177,8 @@ extension BrowserMacAgents {
             let committed = page.committedNavigationCount
             let address = page.live.url
             var accepted = false
+            // Navigating is a use of the page, so a held one's rest starts again.
+            self.renewRest(of: navigation.tab, page, call)
             if let url {
                 accepted = page.corePage.load(url)
                 // A load the core refused starts nothing to wait for.
